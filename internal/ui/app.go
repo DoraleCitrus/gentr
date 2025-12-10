@@ -6,11 +6,21 @@ import (
 
 	"github.com/DoraleCitrus/gentr/internal/model"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// 定义样式
+var (
+	// 选中的行：粉色,加粗
+	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
+	// 普通的行：白色
+	normalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 )
 
 // MainModel 是 TUI 的状态容器
 type MainModel struct {
 	RootNode *model.Node // 之前的扫描结果
+	Cursor   int         // 记录当前光标在第几行
 	Quitting bool        // 用户是否选择退出
 }
 
@@ -18,6 +28,7 @@ type MainModel struct {
 func InitialModel(root *model.Node) MainModel {
 	return MainModel{
 		RootNode: root,
+		Cursor:   0,
 		Quitting: false,
 	}
 }
@@ -38,9 +49,23 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			m.Quitting = true
 			return m, tea.Quit
+
+		// 向上移动光标
+		case "up", "k":
+			if m.Cursor > 0 {
+				m.Cursor--
+			}
+
+		// 向下移动光标
+		case "down", "j":
+			// 限制光标不能超过文件树的总行数
+			// 我们需要计算一下当前可见的总节点数 (目前暂未实现折叠，所以是所有节点)
+			totalNodes := m.countNodes(m.RootNode.Children)
+			if m.Cursor < totalNodes-1 {
+				m.Cursor++
+			}
 		}
 	}
-
 	return m, nil
 }
 
@@ -54,15 +79,17 @@ func (m MainModel) View() string {
 	s := fmt.Sprintf("Project: %s\n", m.RootNode.Name)
 
 	// 递归渲染文件树
-	// 根节点本身不需要前缀,它的子节点开始要有层级
-	s += m.renderChildren(m.RootNode.Children, "")
+	// 根节点本身不需要前缀,它的子节点开始要有前缀
+	// 传递一个整数指针 &index 进去，在递归函数里，index 的值会累加，从而实现全局计数
+	index := 0
+	s += m.renderChildren(m.RootNode.Children, "", &index)
 
-	s += "\nPress 'q' to quit.\n"
+	s += "\nUse arrow keys to move. Press 'q' to quit.\n"
 	return s
 }
 
-// renderChildren 遍历一组子节点并生成字符串
-func (m MainModel) renderChildren(children []*model.Node, prefix string) string {
+// renderChildren 遍历一组子节点并生成字符串,并接收一个 *int 类型的 index 指针
+func (m MainModel) renderChildren(children []*model.Node, prefix string, index *int) string {
 	var sb strings.Builder
 	for i, child := range children {
 		// 判断是否是列表中的最后一个，这决定了使用 └── 还是 ├──
@@ -73,8 +100,22 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string) string 
 			connector = "└── "
 		}
 
-		// 拼接当前行: 前缀 + 连接符 + 文件/文件夹名, e.g. "│   ├── file.txt"
-		sb.WriteString(fmt.Sprintf("%s%s%s\n", prefix, connector, child.Name))
+		// 判断当前行是否光标所在行
+		cursorIndicator := "  " // 默认没有光标指示符
+		style := normalStyle    // 默认样式
+
+		if *index == m.Cursor {
+			cursorIndicator = "> " // 光标指示符
+			style = selectedStyle  // 应用选中样式
+		}
+
+		// 拼接字符串：光标指示器 + 缩进 + 连接符 + 文件名，e.g. "> │   ├── main.go"
+		// 用 Lip Gloss 的 style.Render() 来给文件名上色
+		line := fmt.Sprintf("%s%s%s%s", cursorIndicator, prefix, connector, style.Render(child.Name))
+		sb.WriteString(line + "\n")
+
+		// 处理完一行, 递增 index
+		*index++
 
 		// 如果是文件夹且有子节点，递归渲染其子节点
 		if child.IsDir && len(child.Children) > 0 {
@@ -85,8 +126,20 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string) string 
 			if isLast {
 				childPrefix = prefix + "    "
 			}
-			sb.WriteString(m.renderChildren(child.Children, childPrefix))
+			sb.WriteString(m.renderChildren(child.Children, childPrefix, index))
 		}
 	}
 	return sb.String()
+}
+
+// countNodes 计算子节点的总数量，用于防止光标越界
+func (m MainModel) countNodes(children []*model.Node) int {
+	count := 0
+	for _, child := range children {
+		count++ // 自己算作一个节点
+		if child.IsDir {
+			count += m.countNodes(child.Children) // 加上子节点的数量
+		}
+	}
+	return count
 }
