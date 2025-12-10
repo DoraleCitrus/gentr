@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/DoraleCitrus/gentr/internal/model"
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,15 +50,43 @@ func (m MainModel) View() string {
 		return "Exiting Gentr...\n"
 	}
 
-	// 先显示简单信息用于测试 UI 是否工作
-	s := fmt.Sprintf("Project: %s\n\n", m.RootNode.Name)
+	// 标题
+	s := fmt.Sprintf("Project: %s\n", m.RootNode.Name)
 
-	// 简单的遍历显示(仅一层)
-	for _, child := range m.RootNode.Children {
-		cursor := "  " // 以后这里会变成光标 ">"
-		s += fmt.Sprintf("%s%s\n", cursor, child.Name)
-	}
+	// 递归渲染文件树
+	// 根节点本身不需要前缀,它的子节点开始要有层级
+	s += m.renderChildren(m.RootNode.Children, "")
 
 	s += "\nPress 'q' to quit.\n"
 	return s
+}
+
+// renderChildren 遍历一组子节点并生成字符串
+func (m MainModel) renderChildren(children []*model.Node, prefix string) string {
+	var sb strings.Builder
+	for i, child := range children {
+		// 判断是否是列表中的最后一个，这决定了使用 └── 还是 ├──
+		isLast := i == len(children)-1
+
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+
+		// 拼接当前行: 前缀 + 连接符 + 文件/文件夹名, e.g. "│   ├── file.txt"
+		sb.WriteString(fmt.Sprintf("%s%s%s\n", prefix, connector, child.Name))
+
+		// 如果是文件夹且有子节点，递归渲染其子节点
+		if child.IsDir && len(child.Children) > 0 {
+			// 计算新的前缀
+			// 如果当前节点是最后一个，那子节点的缩进就是空格 "    "
+			// 如果当前节点不是最后一个，那子节点的缩进还需要竖线 "│   " 来连接下面的兄弟节点
+			childPrefix := prefix + "│   "
+			if isLast {
+				childPrefix = prefix + "    "
+			}
+			sb.WriteString(m.renderChildren(child.Children, childPrefix))
+		}
+	}
+	return sb.String()
 }
