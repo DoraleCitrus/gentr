@@ -15,6 +15,8 @@ var (
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
 	// 普通的行：白色
 	normalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	// 辅助符号：暗色
+	dimmedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
 // MainModel 是 TUI 的状态容器
@@ -60,10 +62,16 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			// 限制光标不能超过文件树的总行数
 			// 我们需要计算一下当前可见的总节点数 (目前暂未实现折叠，所以是所有节点)
-			totalNodes := m.countNodes(m.RootNode.Children)
+			totalNodes := m.countVisibleNodes(m.RootNode.Children)
 			if m.Cursor < totalNodes-1 {
 				m.Cursor++
 			}
+
+		// 空格键折叠/展开
+		case " ":
+			idx := 0
+			// 传入 idx 指针，在递归中寻找当前光标对应的节点
+			m.toggleNode(m.RootNode.Children, &idx)
 		}
 	}
 	return m, nil
@@ -84,7 +92,7 @@ func (m MainModel) View() string {
 	index := 0
 	s += m.renderChildren(m.RootNode.Children, "", &index)
 
-	s += "\nUse arrow keys to move. Press 'q' to quit.\n"
+	s += "\n[Space] Toggle folder  [↑/↓] Move  [q] Quit\n"
 	return s
 }
 
@@ -109,16 +117,28 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			style = selectedStyle  // 应用选中样式
 		}
 
+		// 文件夹指示处理
+		icon := ""
+		if child.IsDir {
+			if child.Collapsed {
+				icon = "▶ " // 折叠状态
+			} else {
+				icon = "▼ " // 展开状态
+			}
+		} else {
+			icon = "  " // 文件没有图标
+		}
+
 		// 拼接字符串：光标指示器 + 缩进 + 连接符 + 文件名，e.g. "> │   ├── main.go"
 		// 用 Lip Gloss 的 style.Render() 来给文件名上色
-		line := fmt.Sprintf("%s%s%s%s", cursorIndicator, prefix, connector, style.Render(child.Name))
+		line := fmt.Sprintf("%s%s%s%s%s", cursorIndicator, dimmedStyle.Render(prefix), dimmedStyle.Render(connector), icon, style.Render(child.Name))
 		sb.WriteString(line + "\n")
 
 		// 处理完一行, 递增 index
 		*index++
 
 		// 如果是文件夹且有子节点，递归渲染其子节点
-		if child.IsDir && len(child.Children) > 0 {
+		if child.IsDir && len(child.Children) > 0 && !child.Collapsed {
 			// 计算新的前缀
 			// 如果当前节点是最后一个，那子节点的缩进就是空格 "    "
 			// 如果当前节点不是最后一个，那子节点的缩进还需要竖线 "│   " 来连接下面的兄弟节点
@@ -132,14 +152,40 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 	return sb.String()
 }
 
-// countNodes 计算子节点的总数量，用于防止光标越界
-func (m MainModel) countNodes(children []*model.Node) int {
+// countNodes 计算当前可见节点的数量，用于防止光标越界
+func (m MainModel) countVisibleNodes(children []*model.Node) int {
 	count := 0
 	for _, child := range children {
-		count++ // 自己算作一个节点
-		if child.IsDir {
-			count += m.countNodes(child.Children) // 加上子节点的数量
+		count++
+		// 只有没折叠的目录，才把它的子节点算进总数里
+		if child.IsDir && !child.Collapsed {
+			count += m.countVisibleNodes(child.Children)
 		}
 	}
 	return count
+}
+
+// toggleNode 找到光标位置的节点并切换状态
+// 和渲染一样，模拟遍历一遍，到 m.Cursor 就停下来执行切换操作
+func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
+	for _, child := range children {
+		if *index == m.Cursor {
+			// 找到目标
+			if child.IsDir {
+				child.Collapsed = !child.Collapsed
+			}
+			return true // 告诉上层找到了，停止搜索
+		}
+
+		*index++
+
+		if child.IsDir && !child.Collapsed {
+			// 递归调用子节点，并接收返回值
+			found := m.toggleNode(child.Children, index)
+			if found {
+				return true // 如果子节点里找到了也立刻停止，告诉上层
+			}
+		}
+	}
+	return false // 这一层没找到，继续找兄弟节点
 }
