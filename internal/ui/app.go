@@ -99,9 +99,10 @@ type CheckUpdateMsg struct {
 
 // MainModel 是 TUI 的状态容器
 type MainModel struct {
-	RootNode *model.Node // 之前的扫描结果
-	Cursor   int         // 记录当前光标在第几行
-	Quitting bool        // 用户是否选择退出
+	RootNode     *model.Node // 之前的扫描结果
+	Cursor       int         // 记录当前光标在第几行
+	ScrollOffset int         // 滚动偏移量
+	Quitting     bool        // 用户是否选择退出
 
 	// 终端的宽度和高度，用于计算截断
 	Width  int
@@ -151,6 +152,7 @@ func InitialModel(root *model.Node, limitReached bool, currentVersion string) Ma
 	return MainModel{
 		RootNode:       root,
 		Cursor:         0,
+		ScrollOffset:   0,
 		Quitting:       false,
 		Width:          80,
 		Height:         24,
@@ -185,6 +187,28 @@ func (m MainModel) checkUpdateCmd() tea.Msg {
 	}
 }
 
+// viewportHeight 计算用于显示文件树的视口高度
+func (m MainModel) viewportHeight() int {
+	headerHeight := 1 // "Project: ..."
+	if m.UpdateAvailable {
+		headerHeight++
+	}
+	if m.LimitWarning {
+		headerHeight++
+	}
+
+	footerHeight := 3 // Status bar + Help (approx)
+	if m.InputMode || m.SearchMode {
+		footerHeight = 4 // Input box + hint (approx)
+	}
+
+	h := m.Height - headerHeight - footerHeight
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
 // Update 处理用户输入并更新状态
 func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// 定义 cmd 变量用于处理 bubbles 组件的命令
@@ -195,6 +219,13 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		// 窗口大小改变时，确保光标可见
+		vpHeight := m.viewportHeight()
+		if m.Cursor < m.ScrollOffset {
+			m.ScrollOffset = m.Cursor
+		} else if m.Cursor >= m.ScrollOffset+vpHeight {
+			m.ScrollOffset = m.Cursor - vpHeight + 1
+		}
 
 	// 处理防抖保存消息
 	case SaveMsg:
@@ -226,6 +257,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.SearchMode = false
 				m.Cursor = 0 // 退出搜索时重置光标防止越界
+				m.ScrollOffset = 0
 				return m, nil
 			}
 		}
@@ -235,6 +267,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// 每次按键后，搜索词变了，树的结构就变了，光标必须重置，防止越界
 		m.Cursor = 0
+		m.ScrollOffset = 0
 		return m, siCmd
 	}
 
@@ -285,6 +318,9 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.Cursor > 0 {
 					m.Cursor--
 					m.StatusMsg = "" // 移动光标时清除提示消息
+					if m.Cursor < m.ScrollOffset {
+						m.ScrollOffset = m.Cursor
+					}
 				}
 
 			// 向下移动光标
@@ -295,6 +331,10 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.Cursor < totalNodes-1 {
 					m.Cursor++
 					m.StatusMsg = "" // 移动光标时清除提示消息
+					vpHeight := m.viewportHeight()
+					if m.Cursor >= m.ScrollOffset+vpHeight {
+						m.ScrollOffset = m.Cursor - vpHeight + 1
+					}
 				}
 
 			// 空格键折叠/展开
@@ -376,11 +416,13 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.SearchInput.Value() != "" {
 					m.SearchInput.SetValue("")
 					m.Cursor = 0 // 重置光标
+					m.ScrollOffset = 0
 				}
 				// 退出 Git 模式
 				if m.GitMode {
 					m.GitMode = false
 					m.Cursor = 0
+					m.ScrollOffset = 0
 					m.StatusMsg = "Git Filter: OFF"
 				}
 
@@ -388,6 +430,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "g":
 				m.GitMode = !m.GitMode
 				m.Cursor = 0 // 列表变了，重置光标
+				m.ScrollOffset = 0
 				if m.GitMode {
 					m.StatusMsg = "Git Filter: ON (Showing changed files)"
 				} else {
@@ -509,7 +552,32 @@ func (m MainModel) View() string {
 	// 递归渲染文件树
 	index := 0
 	// forceHidden 参数，初始为 false
-	treeView := m.renderChildren(m.RootNode.Children, "", &index, false)
+	fullTreeView := m.renderChildren(m.RootNode.Children, "", &index, false)
+
+	// 处理滚动逻辑
+	treeLines := strings.Split(fullTreeView, "\n")
+	// 去除最后可能产生的空行
+	if len(treeLines) > 0 && treeLines[len(treeLines)-1] == "" {
+		treeLines = treeLines[:len(treeLines)-1]
+	}
+
+	vpHeight := m.viewportHeight()
+	start := m.ScrollOffset
+	end := start + vpHeight
+
+	// 边界检查
+	if start < 0 {
+		start = 0
+	}
+	if start > len(treeLines) {
+		start = len(treeLines)
+	}
+	if end > len(treeLines) {
+		end = len(treeLines)
+	}
+
+	visibleLines := treeLines[start:end]
+	treeView := strings.Join(visibleLines, "\n")
 
 	// 底部区域逻辑：根据模式切换显示内容
 	bottomBar := ""
