@@ -34,6 +34,14 @@ var (
 	annotationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 	// 搜索匹配的高亮样式 (黄色加粗)
 	searchMatchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Bold(true)
+
+	// Git 样式
+	// 黄色表示修改
+	gitModifiedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EBCB8B")).Bold(true)
+	// 绿色表示新增
+	gitAddedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Bold(true)
+	// Git模式下的状态栏 (橙色背景)
+	gitStatusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#D08770")).Padding(0, 1).Bold(true)
 )
 
 // 定义防抖消息，携带版本号
@@ -66,6 +74,9 @@ type MainModel struct {
 
 	// 防抖计数器 (版本号)
 	SaveTag int
+
+	// Git 模式开关
+	GitMode bool
 }
 
 // InitialModel 初始化状态
@@ -97,6 +108,7 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 		SearchInput:  si,           // 注入搜索框
 		SearchMode:   false,        // 默认关闭
 		SaveTag:      0,            // 防抖计数器初始化
+		GitMode:      false,        // 默认关闭 Git 模式
 	}
 }
 
@@ -138,6 +150,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.SearchInput.SetValue("") // 清空搜索
 				}
 				m.SearchMode = false
+				m.Cursor = 0 // 退出搜索时重置光标防止越界
 				return m, nil
 			}
 		}
@@ -259,11 +272,27 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.SearchInput.Focus()
 				return m, textinput.Blink
 
-			// 在导航模式按 Esc 清空搜索结果
+			// 在导航模式按 Esc 清空搜索结果，也退出 Git 模式
 			case "esc":
 				if m.SearchInput.Value() != "" {
 					m.SearchInput.SetValue("")
 					m.Cursor = 0 // 重置光标
+				}
+				// 退出 Git 模式
+				if m.GitMode {
+					m.GitMode = false
+					m.Cursor = 0
+					m.StatusMsg = "Git Filter: OFF"
+				}
+
+			// 按 'g' 切换 Git 模式
+			case "g":
+				m.GitMode = !m.GitMode
+				m.Cursor = 0 // 列表变了，重置光标
+				if m.GitMode {
+					m.StatusMsg = "Git Filter: ON (Showing changed files)"
+				} else {
+					m.StatusMsg = "Git Filter: OFF"
 				}
 			}
 		}
@@ -291,17 +320,26 @@ func (m MainModel) saveStateImmediate() {
 	_ = core.SaveConfig(cwd, m.RootNode)
 }
 
-// shouldShow 判断节点是否应该在当前搜索词下显示
+// shouldShow 判断节点是否应该在当前过滤器(Search && Git)下显示
 func (m MainModel) shouldShow(node *model.Node) bool {
-	term := m.SearchInput.Value()
-	if term == "" {
-		return true // 没有搜索词，默认显示
+	// 1. 搜索词检查
+	searchTerm := m.SearchInput.Value()
+	matchesSearch := true
+	if searchTerm != "" {
+		matchesSearch = m.doesNodeMatch(node, strings.ToLower(searchTerm))
 	}
-	// 递归匹配：如果自己匹配 OR 任何子孙匹配，则显示
-	return m.doesNodeMatch(node, strings.ToLower(term))
+
+	// 2. Git 状态检查
+	matchesGit := true
+	if m.GitMode {
+		matchesGit = m.doesNodeMatchGit(node)
+	}
+
+	// 必须同时满足（交集）
+	return matchesSearch && matchesGit
 }
 
-// doesNodeMatch 递归匹配检查
+// doesNodeMatch 递归搜索匹配检查
 func (m MainModel) doesNodeMatch(node *model.Node, term string) bool {
 	// 1. 检查自己
 	if strings.Contains(strings.ToLower(node.Name), term) {
@@ -312,6 +350,23 @@ func (m MainModel) doesNodeMatch(node *model.Node, term string) bool {
 	if node.IsDir {
 		for _, child := range node.Children {
 			if m.doesNodeMatch(child, term) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// doesNodeMatchGit 递归 Git 匹配检查
+func (m MainModel) doesNodeMatchGit(node *model.Node) bool {
+	// 如果自己有状态 (M or A)，匹配
+	if node.GitStatus != "" {
+		return true
+	}
+	// 如果是文件夹，检查子节点有没有变的
+	if node.IsDir {
+		for _, child := range node.Children {
+			if m.doesNodeMatchGit(child) {
 				return true
 			}
 		}
@@ -373,15 +428,26 @@ func (m MainModel) View() string {
 			statusText = statusText[:m.Width-5] + "..."
 		}
 
-		// 使用 statusBarStyle 渲染状态栏，并让它占满整行宽度
-		statusBar := statusBarStyle.Width(m.Width).Render(statusText)
+		// 根据是否是 Git 模式切换状态栏颜色
+		currentStatusBarStyle := statusBarStyle
+		if m.GitMode {
+			currentStatusBarStyle = gitStatusBarStyle
+		}
+		statusBar := currentStatusBarStyle.Width(m.Width).Render(statusText)
 
 		// 提示文案
 		filterHint := ""
 		if m.SearchInput.Value() != "" {
-			filterHint = " [Esc] Clear Filter"
+			filterHint += " [Esc] Clear Search"
 		}
-		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search%s  [c] Copy  [q] Quit", filterHint)
+		// Git 模式提示
+		if m.GitMode {
+			filterHint += " [g] All Files"
+		} else {
+			filterHint += " [g] Git Changes"
+		}
+
+		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search  %s  [c] Copy  [q] Quit", filterHint)
 		bottomBar = statusBar + help
 	}
 
@@ -429,6 +495,23 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			style = hiddenStyle // 默认隐藏样式
 		}
 
+		// Git 颜色逻辑
+		// 优先级：光标 > 搜索匹配 > Git状态 > 普通
+		// 如果不在光标上，且没有被隐藏
+		if *index != m.Cursor && !isNodeHidden {
+			if child.GitStatus == "M" {
+				style = gitModifiedStyle
+			} else if child.GitStatus == "A" {
+				style = gitAddedStyle
+			}
+
+			// 搜索高亮逻辑 (保留)
+			term := m.SearchInput.Value()
+			if term != "" && strings.Contains(strings.ToLower(child.Name), strings.ToLower(term)) {
+				style = searchMatchStyle
+			}
+		}
+
 		if *index == m.Cursor {
 			cursorIndicator = "> " // 光标指示符
 			style = selectedStyle  // 默认选中样式
@@ -459,15 +542,12 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 
 		displayName := child.Name
 
-		// 搜索高亮逻辑
-		// 如果搜索词不为空，且匹配到了，我们用 searchMatchStyle 渲染整个文件名
-		term := m.SearchInput.Value()
-		if term != "" && strings.Contains(strings.ToLower(displayName), strings.ToLower(term)) {
-			// 如果没被选中，就应用高亮色；如果选中了，保留选中的粉色（selectedStyle 优先级高）
-			// 但为了让搜索结果在非选中时醒目，我们修改 style
-			if *index != m.Cursor {
-				style = searchMatchStyle
-			}
+		// 构造 Git 标记
+		gitMark := ""
+		if child.GitStatus == "M" {
+			gitMark = " [M]"
+		} else if child.GitStatus == "A" {
+			gitMark = " [+]"
 		}
 
 		// 处理注释的显示逻辑
@@ -476,50 +556,66 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			annotationStr = fmt.Sprintf("  # %s", child.Annotation)
 		}
 
+		// 拼接顺序：文件名 + Git标记 + 注释
+		totalContent := displayName + gitMark + annotationStr
+
 		// 增加对极小宽度的判断，防止 availableWidth < 0 导致 crash
 		if availableWidth <= 1 {
 			displayName = "" // 空间太小，直接不显示
 			annotationStr = ""
+			gitMark = "" // [新增]
 		} else {
-			// 计算总内容宽度 (名字 + 注释)
-			totalWidth := lipgloss.Width(displayName + annotationStr)
+			// 计算总内容宽度 (名字 + Git标记 + 注释)
+			totalWidth := lipgloss.Width(totalContent)
 
 			// 如果总宽度超过可用空间，需要截断
 			if totalWidth > availableWidth {
-				nameWidth := lipgloss.Width(displayName)
-
-				// 情况1: 连名字都放不下
-				if nameWidth >= availableWidth {
-					annotationStr = "" // 不显示注释
-					runes := []rune(displayName)
-					// 截断名字
-					truncateLen := availableWidth - 1
-					if truncateLen > 0 && truncateLen < len(runes) {
-						displayName = string(runes[:truncateLen]) + "…"
+				// 这里的截断策略：优先保证文件名，然后是 Git 标记，最后是注释
+				// 为了简化 MVP，我们直接截断 annotationStr
+				// 重新计算除注释外的基础宽度
+				baseLen := lipgloss.Width(displayName + gitMark)
+				if baseLen >= availableWidth {
+					// 空间极其紧张，只显示名字
+					annotationStr = ""
+					gitMark = ""
+					runesName := []rune(displayName)
+					if availableWidth-1 > 0 {
+						displayName = string(runesName[:availableWidth-1]) + "…"
 					}
 				} else {
-					// 情况2: 名字放得下，但注释放不下，截断注释
-					// 剩余给注释的空间
-					remainForAnno := availableWidth - nameWidth
+					// 截断注释
+					remain := availableWidth - baseLen
 					runesAnno := []rune(annotationStr)
-					if remainForAnno > 1 && remainForAnno < len(runesAnno) {
-						annotationStr = string(runesAnno[:remainForAnno-1]) + "…"
+					if remain > 1 && remain < len(runesAnno) {
+						annotationStr = string(runesAnno[:remain-1]) + "…"
 					} else {
-						annotationStr = "" // 空间太小连省略号都放不下
+						annotationStr = ""
 					}
 				}
 			}
 		}
 
-		// 拼接字符串：光标指示器 + 缩进 + 连接符 + 文件名 + [注释]
-		// 单独渲染注释部分
-		line := fmt.Sprintf("%s%s%s%s%s%s",
+		// 渲染 Git 标记的样式
+		gitMarkStyle := normalStyle
+		if !isNodeHidden {
+			if child.GitStatus == "M" {
+				gitMarkStyle = gitModifiedStyle
+			} else if child.GitStatus == "A" {
+				gitMarkStyle = gitAddedStyle
+			}
+		} else {
+			gitMarkStyle = hiddenStyle
+		}
+
+		// 拼接字符串：光标指示器 + 缩进 + 连接符 + 文件名 + [Git标记] + [注释]
+		line := fmt.Sprintf("%s%s%s%s%s%s%s",
 			cursorIndicator,
 			dimmedStyle.Render(prefix),
 			dimmedStyle.Render(connector),
 			icon,
 			style.Render(displayName),
-			annotationStyle.Render(annotationStr), // 渲染注释
+			gitMarkStyle.Render(gitMark), // [新增] 渲染 Git 标记
+			annotationStyle.Render(annotationStr),
 		)
 		sb.WriteString(line + "\n")
 
@@ -527,10 +623,10 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 		*index++
 
 		// 如果是文件夹且有子节点，递归渲染其子节点
-		// 如果有搜索词，强制忽略 Collapsed 状态
+		// 强制展开逻辑：搜索 或 Git模式下都强制展开
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
-			shouldExpand = true // 搜索模式下强制展开
+		if m.SearchInput.Value() != "" || m.GitMode {
+			shouldExpand = true // 强制展开
 		}
 
 		if child.IsDir && len(child.Children) > 0 && shouldExpand {
@@ -557,13 +653,13 @@ func (m MainModel) countVisibleNodes(children []*model.Node) int {
 
 		count++
 
-		// 搜索时强制展开逻辑
+		// 强制展开逻辑
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
+		if m.SearchInput.Value() != "" || m.GitMode {
 			shouldExpand = true
 		}
 
-		// 只有没折叠的目录 (或搜索时)，才把它的子节点算进总数里
+		// 只有没折叠的目录 (或搜索/Git时)，才把它的子节点算进总数里
 		if child.IsDir && shouldExpand {
 			count += m.countVisibleNodes(child.Children)
 		}
@@ -587,9 +683,9 @@ func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
 		}
 		*index++
 
-		// 搜索时强制展开逻辑
+		// 强制展开逻辑
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
+		if m.SearchInput.Value() != "" || m.GitMode {
 			shouldExpand = true
 		}
 
@@ -616,9 +712,9 @@ func (m MainModel) toggleHidden(children []*model.Node, index *int) bool {
 		}
 		*index++
 
-		// 搜索时强制展开逻辑
+		// 强制展开逻辑
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
+		if m.SearchInput.Value() != "" || m.GitMode {
 			shouldExpand = true
 		}
 
@@ -644,9 +740,9 @@ func (m MainModel) getNodeAtCursor(children []*model.Node, index *int) *model.No
 		}
 		*index++
 
-		// 搜索时强制展开逻辑
+		// 强制展开逻辑
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
+		if m.SearchInput.Value() != "" || m.GitMode {
 			shouldExpand = true
 		}
 
@@ -703,9 +799,9 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 		sb.WriteString(line + "\n")
 
 		// 递归处理子文件夹
-		// 搜索时强制展开逻辑
+		// 强制展开逻辑
 		shouldExpand := !child.Collapsed
-		if m.SearchInput.Value() != "" {
+		if m.SearchInput.Value() != "" || m.GitMode {
 			shouldExpand = true
 		}
 

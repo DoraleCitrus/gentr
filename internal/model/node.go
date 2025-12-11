@@ -8,7 +8,11 @@ type Node struct {
 	Children []*Node //子节点列表，仅当 IsDir 为 true 时有效
 
 	// 以下字段用于UI交互
-	Collapsed bool   //是否折叠
-	Hidden    bool   //是否隐藏(用户手动排除)
+	Collapsed  bool   //是否折叠
+	Hidden     bool   //是否隐藏(用户手动排除)
 	Annotation string //用户注释
+
+	// Git 状态
+	// "" = 无变化, "M" = 修改, "A" = 新增/未追踪, "?" = 未知
+	GitStatus string
 }

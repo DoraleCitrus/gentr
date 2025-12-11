@@ -25,18 +25,22 @@ func Walk(rootPath string) (*model.Node, bool, error) {
 	// 加载 .gitignore
 	ignoreObj, _ := ignore.CompileIgnoreFile(filepath.Join(rootPath, ".gitignore"))
 
+	// 预加载 Git 状态
+	gitStatusMap := LoadGitStatus(rootPath)
+
 	// 初始化计数器
 	c := &counter{count: 0}
 
 	// 开始扫描
-	root, err := scanDir(rootPath, ignoreObj, 0, c)
+	// 传入 rootPath 和 gitStatusMap
+	root, err := scanDir(rootPath, rootPath, ignoreObj, 0, c, gitStatusMap)
 
 	// 返回结果，同时返回是否触发了限制
 	return root, c.limitReached, err
 }
 
 // scanDir 递归扫描目录，构建节点树
-func scanDir(path string, ignoreObj *ignore.GitIgnore, depth int, c *counter) (*model.Node, error) {
+func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth int, c *counter, gitMap map[string]string) (*model.Node, error) {
 	// 深度熔断检查
 	if depth > MaxDepth {
 		return nil, nil // 超过深度，不再深入，直接返回 nil，会被上层过滤掉
@@ -62,6 +66,16 @@ func scanDir(path string, ignoreObj *ignore.GitIgnore, depth int, c *counter) (*
 		Name:  info.Name(),
 		Path:  path,
 		IsDir: info.IsDir(),
+	}
+
+	// 注入 Git 状态
+	// 计算相对路径以便在 gitMap 中查找
+	relPath, err := filepath.Rel(rootPath, path)
+	if err == nil {
+		relPath = filepath.ToSlash(relPath) // 统一为 "/" 分隔符，兼容不同系统
+		if status, ok := gitMap[relPath]; ok {
+			node.GitStatus = status
+		}
 	}
 
 	// 如果不是文件夹，返回节点
@@ -90,7 +104,8 @@ func scanDir(path string, ignoreObj *ignore.GitIgnore, depth int, c *counter) (*
 		fullPath := filepath.Join(path, entry.Name())
 
 		// 递归调用 (深度 + 1)
-		childNode, err := scanDir(fullPath, ignoreObj, depth+1, c)
+		// 传递 rootPath 和 gitMap
+		childNode, err := scanDir(fullPath, rootPath, ignoreObj, depth+1, c, gitMap)
 		if err != nil {
 			continue // 遇到错误选择跳过而不是崩溃
 		}
