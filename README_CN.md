@@ -21,14 +21,6 @@
 
 </div>
 
-<br />
-
-<div align="center">
-  <img src="https://via.placeholder.com/800x450.png?text=Demo+GIF+Placeholder+(请替换为你的动图)" alt="Gentr Demo" width="800">
-</div>
-
-<br />
-
 ## 📖 简介
 
 **Gentr** 是经典 `tree` 命令的现代化升级版。它是一个基于终端（TUI）的交互式工具，专为编写技术文档、代码审查和项目交接而设计。

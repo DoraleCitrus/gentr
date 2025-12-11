@@ -21,13 +21,6 @@
 
 </div>
 
-<br />
-
-<div align="center">
-  <img src="https://via.placeholder.com/800x450.png?text=Demo+GIF+Placeholder+(See+Below+How+To+Record)" alt="Gentr Demo" width="800">
-</div>
-
-<br />
 
 ## 📖 Introduction
 
