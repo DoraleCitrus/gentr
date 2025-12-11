@@ -10,5 +10,5 @@ type Node struct {
 	// 以下字段用于UI交互
 	Collapsed bool   //是否折叠
 	Hidden    bool   //是否隐藏(用户手动排除)
-	Annoation string //用户注释
+	Annotation string //用户注释
 }
