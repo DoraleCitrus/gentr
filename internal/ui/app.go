@@ -44,6 +44,44 @@ var (
 	gitStatusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#D08770")).Padding(0, 1).Bold(true)
 )
 
+// SVG 主题系统定义
+type Theme struct {
+	Name         string
+	BgColor      string // 背景色
+	TextColor    string // 普通文件名颜色
+	TreeColor    string // 树形线条颜色
+	FolderColor  string // 文件夹图标颜色
+	CommentColor string // 注释颜色
+	GitModColor  string // [M] 颜色
+	GitAddColor  string // [+] 颜色
+}
+
+// 预设两套风格主题
+var (
+	// Dark: 基于 VSCode Dark
+	DarkTheme = Theme{
+		Name:         "Dark",
+		BgColor:      "#282a36",
+		TextColor:    "#f8f8f2",
+		TreeColor:    "#6272a4",
+		FolderColor:  "#8be9fd",
+		CommentColor: "#6272a4",
+		GitModColor:  "#f1fa8c", // Yellow
+		GitAddColor:  "#50fa7b", // Green
+	}
+	// Light: 基于 GitHub Light
+	LightTheme = Theme{
+		Name:         "Light",
+		BgColor:      "#ffffff",
+		TextColor:    "#24292e",
+		TreeColor:    "#6a737d",
+		FolderColor:  "#0366d6",
+		CommentColor: "#6a737d",
+		GitModColor:  "#b08800", // Dark Yellow
+		GitAddColor:  "#22863a", // Green
+	}
+)
+
 // 定义防抖消息，携带版本号
 type SaveMsg struct {
 	Tag int
@@ -266,15 +304,15 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
 
-			// 'p' 键保存为 SVG 图片
+			// 'p' 键保存两套主题的 SVG 图片
 			case "p":
-				output := m.generateTreeOutput()
-				filename := "gentr_image.svg"
-				err := m.saveToSVG(output, filename)
-				if err != nil {
-					m.StatusMsg = "Error saving SVG: " + err.Error()
+				err1 := m.saveThemeSVG(DarkTheme, "gentr_dark.svg")
+				err2 := m.saveThemeSVG(LightTheme, "gentr_light.svg")
+
+				if err1 != nil || err2 != nil {
+					m.StatusMsg = "Error saving SVG!"
 				} else {
-					m.StatusMsg = fmt.Sprintf("Saved to %s", filename)
+					m.StatusMsg = "Saved gentr_dark.svg & gentr_light.svg"
 				}
 				return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
 
@@ -472,7 +510,7 @@ func (m MainModel) View() string {
 		}
 
 		// 帮助文案
-		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search  %s\n[c] Copy  [s] Save Txt  [p] Save SVG  [q] Quit", filterHint)
+		help := fmt.Sprintf("\n[Spc] Toggle  [Ent] Hide/Show  [i] Comment  [/] Search  %s\n[c] Copy  [s] Save Txt  [p] Save SVG  [q] Quit", filterHint)
 		bottomBar = statusBar + help
 	}
 
@@ -854,48 +892,186 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 	return sb.String()
 }
 
-// SVG 生成逻辑
-func (m MainModel) saveToSVG(content string, filename string) error {
-	lines := strings.Split(content, "\n")
-	lineHeight := 20
-	width := 800 // 默认宽度
-	height := (len(lines) + 2) * lineHeight
+// 核心重构：SVG 渲染引擎
 
-	// 估算宽度：找到最长的一行
-	maxLen := 0
-	for _, line := range lines {
-		if len(line) > maxLen {
-			maxLen = len(line)
-		}
-	}
-	// 粗略估算：每个字符宽度 10px (对于 monospace 字体)
-	calculatedWidth := maxLen * 10
-	if calculatedWidth > width {
-		width = calculatedWidth + 40 // 加点边距
-	}
+// saveThemeSVG 负责生成带主题的 SVG
+func (m MainModel) saveThemeSVG(theme Theme, filename string) error {
+	lineHeight := 24 // 增加行高，更宽松
+
+	// 1. 生成内容 (XML 格式)
+	content, lineCount, maxCharWidth := m.generateSVGContent(m.RootNode, theme)
+
+	// 2. 计算画布
+	width := (maxCharWidth * 10) + 60 // 10px per char + padding
+	if width < 600 {
+		width = 600
+	} // 最小宽度
+	height := (lineCount * lineHeight) + 60
 
 	var sb strings.Builder
-	// SVG Header
+	// Header
 	sb.WriteString(fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d">`, width, height))
-	// 背景色 (VS Code Dark 风格)
-	sb.WriteString(fmt.Sprintf(`<rect width="100%%" height="100%%" fill="#1e1e1e" />`))
-	// 样式定义
-	sb.WriteString(`<style>text { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; fill: #d4d4d4; white-space: pre; }</style>`)
+	// Background
+	sb.WriteString(fmt.Sprintf(`<rect width="100%%" height="100%%" fill="%s" />`, theme.BgColor))
 
-	y := 20
-	for _, line := range lines {
-		if line == "" {
-			continue
+	// 字体栈：显式声明中文字体
+	fontFamily := "'Consolas', 'Monaco', 'Microsoft YaHei', 'PingFang SC', 'WenQuanYi Micro Hei', monospace"
+
+	// Style
+	sb.WriteString(fmt.Sprintf(`<style>
+		text { 
+			font-family: %s; 
+			font-size: 14px; 
+			white-space: pre; 
 		}
-		// 转义 XML 特殊字符
-		safeLine := strings.ReplaceAll(line, "&", "&amp;")
-		safeLine = strings.ReplaceAll(safeLine, "<", "&lt;")
-		safeLine = strings.ReplaceAll(safeLine, ">", "&gt;")
+		.tree { fill: %s; }
+		.text { fill: %s; }
+		.folder { fill: %s; font-weight: bold; }
+		.comment { fill: %s; font-style: italic; }
+		.git-mod { fill: %s; font-weight: bold; }
+		.git-add { fill: %s; font-weight: bold; }
+	</style>`,
+		fontFamily,
+		theme.TreeColor, theme.TextColor, theme.FolderColor, theme.CommentColor, theme.GitModColor, theme.GitAddColor))
 
-		sb.WriteString(fmt.Sprintf(`<text x="20" y="%d">%s</text>`, y, safeLine))
-		y += lineHeight
-	}
-	sb.WriteString(`</svg>`)
+	// Padding Container (Translate)
+	sb.WriteString(`<g transform="translate(30, 40)">`) // 左上角留白
+	sb.WriteString(content)
+	sb.WriteString(`</g></svg>`)
 
 	return os.WriteFile(filename, []byte(sb.String()), 0644)
+}
+
+// generateSVGContent 递归生成 SVG 内容
+func (m MainModel) generateSVGContent(root *model.Node, theme Theme) (string, int, int) {
+	var sb strings.Builder
+	lineIndex := 0
+	maxLen := 0
+
+	// 根节点，先递增行号
+	lineIndex++
+	sb.WriteString(fmt.Sprintf(`<text x="0" y="%d" class="folder">%s</text>`, lineIndex*24-24, escapeXML(root.Name)))
+	if len(root.Name) > maxLen {
+		maxLen = len(root.Name)
+	}
+
+	// 递归
+	childContent, _, childMax := m.writeSVGRecursive(root.Children, "", theme, &lineIndex)
+	sb.WriteString(childContent)
+
+	if childMax > maxLen {
+		maxLen = childMax
+	}
+	return sb.String(), lineIndex, maxLen
+}
+
+// writeSVGRecursive 递归生成 XML 标签
+func (m MainModel) writeSVGRecursive(children []*model.Node, prefix string, theme Theme, lineIndex *int) (string, int, int) {
+	var sb strings.Builder
+	maxLen := 0
+	lineHeight := 24
+
+	var visibleChildren []*model.Node
+	for _, child := range children {
+		if !child.Hidden && m.shouldShow(child) {
+			visibleChildren = append(visibleChildren, child)
+		}
+	}
+
+	for i, child := range visibleChildren {
+		*lineIndex = *lineIndex + 1 // 先递增行号
+		currentY := (*lineIndex - 1) * lineHeight
+
+		isLast := i == len(visibleChildren)-1
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+
+		// 开始一行
+		sb.WriteString(fmt.Sprintf(`<text x="0" y="%d">`, currentY))
+
+		// 1. 树形线条
+		sb.WriteString(fmt.Sprintf(`<tspan class="tree">%s%s</tspan>`, escapeXML(prefix), connector))
+
+		// 2. 图标 (可选，为了美观这里统一用箭头或留空)
+		icon := ""
+		if child.IsDir {
+			icon = "▼ "
+		}
+		if icon != "" {
+			sb.WriteString(fmt.Sprintf(`<tspan class="tree">%s</tspan>`, icon))
+		}
+
+		// 3. 文件名 (根据 Git 状态变色)
+		nameClass := "text"
+		if child.IsDir {
+			nameClass = "folder"
+		}
+		if m.GitMode {
+			if child.GitStatus == "M" {
+				nameClass = "git-mod"
+			}
+			if child.GitStatus == "A" {
+				nameClass = "git-add"
+			}
+		}
+		sb.WriteString(fmt.Sprintf(`<tspan class="%s">%s</tspan>`, nameClass, escapeXML(child.Name)))
+
+		// 4. Git 标记 (仅在 Git 模式下)
+		if m.GitMode {
+			mark := ""
+			markClass := ""
+			if child.GitStatus == "M" {
+				mark = " [M]"
+				markClass = "git-mod"
+			} else if child.GitStatus == "A" {
+				mark = " [+]"
+				markClass = "git-add"
+			}
+			if mark != "" {
+				sb.WriteString(fmt.Sprintf(`<tspan class="%s">%s</tspan>`, markClass, mark))
+			}
+		}
+
+		// 5. 注释
+		if child.Annotation != "" {
+			sb.WriteString(fmt.Sprintf(`<tspan class="comment">  # %s</tspan>`, escapeXML(child.Annotation)))
+		}
+
+		sb.WriteString(`</text>`)
+
+		// 计算粗略宽度
+		rowLen := len(prefix) + 4 + len(child.Name) + len(child.Annotation) + 5
+		if rowLen > maxLen {
+			maxLen = rowLen
+		}
+
+		// 递归子节点
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" || m.GitMode {
+			shouldExpand = true
+		}
+
+		if child.IsDir && len(child.Children) > 0 && shouldExpand {
+			childPrefix := prefix + "│   "
+			if isLast {
+				childPrefix = prefix + "    "
+			}
+			cContent, _, cMax := m.writeSVGRecursive(child.Children, childPrefix, theme, lineIndex)
+			sb.WriteString(cContent)
+			if cMax > maxLen {
+				maxLen = cMax
+			}
+		}
+	}
+	return sb.String(), 0, maxLen
+}
+
+// escapeXML 转义 XML 特殊字符
+func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
