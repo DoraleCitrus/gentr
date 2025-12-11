@@ -19,6 +19,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 如果有则加载持久化配置
+	// 会修改 rootNode 里的 Annotation/Hidden/Collapsed 状态
+	core.LoadConfig(cwd, rootNode)
+
 	// 初始化 UI 模型，将 limitReached 传给 UI
 	initialModel := ui.InitialModel(rootNode, limitReached)
 

@@ -2,9 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"os" // 用于获取当前工作目录以保存配置
 	"strings"
 	"time" // 用于 Tick
 
+	"github.com/DoraleCitrus/gentr/internal/core"
 	"github.com/DoraleCitrus/gentr/internal/model"
 	"github.com/atotto/clipboard"                // 剪贴板库
 	"github.com/charmbracelet/bubbles/textinput" // 输入框组件
@@ -104,6 +106,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				node := m.getNodeAtCursor(m.RootNode.Children, &idx)
 				if node != nil {
 					node.Annotation = m.TextInput.Value()
+					m.saveState() // 保存状态到文件
 				}
 				m.InputMode = false
 				m.StatusMsg = "Comment saved!"
@@ -152,12 +155,18 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case " ":
 				idx := 0
 				// 传入 idx 指针，在递归中寻找当前光标对应的节点
-				m.toggleNode(m.RootNode.Children, &idx)
+				// 如果发生状态改变，触发保存
+				if m.toggleNode(m.RootNode.Children, &idx) {
+					m.saveState() // 保存状态到文件
+				}
 
 			// 回车键隐藏/显示
 			case "enter":
 				idx := 0
-				m.toggleHidden(m.RootNode.Children, &idx)
+				// 如果发生状态改变，触发保存
+				if m.toggleHidden(m.RootNode.Children, &idx) {
+					m.saveState() // 保存状态到文件
+				}
 
 			// 'c' 键复制功能
 			case "c":
@@ -189,6 +198,15 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// saveState 保存当前状态到 .gentr.json
+func (m MainModel) saveState() {
+	cwd, _ := os.Getwd()
+	// 调用 core 包的 SaveConfig 方法
+	// 频繁 IO 可能需要做防抖处理，
+	// 但 TUI 操作频率较低，直接同步保存通常没有性能问题。
+	_ = core.SaveConfig(cwd, m.RootNode)
 }
 
 // View 渲染终端上的界面

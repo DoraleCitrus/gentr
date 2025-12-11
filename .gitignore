@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# json config file for testing
+.gentr.json
+
 # Editor/IDE
 # .idea/
 # .vscode/
