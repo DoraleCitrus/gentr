@@ -8,7 +8,7 @@ import (
 
 	"github.com/DoraleCitrus/gentr/internal/core"
 	"github.com/DoraleCitrus/gentr/internal/model"
-	"github.com/atotto/clipboard"                // 剪贴板库
+	"github.com/atotto/clipboard"               // 剪贴板库
 	"github.com/charmbracelet/bubbles/textinput" // 输入框组件
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -34,6 +34,11 @@ var (
 	annotationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 )
 
+// 定义防抖消息，携带版本号
+type SaveMsg struct {
+	Tag int
+}
+
 // MainModel 是 TUI 的状态容器
 type MainModel struct {
 	RootNode *model.Node // 之前的扫描结果
@@ -52,6 +57,9 @@ type MainModel struct {
 	// 输入框相关状态
 	TextInput textinput.Model // 输入框组件
 	InputMode bool            // 是否处于编辑模式
+
+	// 防抖计数器 (版本号)
+	SaveTag int
 }
 
 // InitialModel 初始化状态
@@ -73,6 +81,7 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 		StatusMsg:    "",           // 初始化为空
 		TextInput:    ti,           // 注入输入框
 		InputMode:    false,        // 默认关闭
+		SaveTag:      0,            // 防抖计数器初始化
 	}
 }
 
@@ -92,6 +101,14 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+
+	// 处理防抖保存消息
+	case SaveMsg:
+		// 当消息里的 Tag 等于当前的 SaveTag 时，说明是最新的操作，执行保存
+		if msg.Tag == m.SaveTag {
+			m.saveStateImmediate()
+		}
+		return m, nil
 	}
 
 	// 区分 输入模式/导航模式
@@ -106,11 +123,11 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				node := m.getNodeAtCursor(m.RootNode.Children, &idx)
 				if node != nil {
 					node.Annotation = m.TextInput.Value()
-					m.saveState() // 保存状态到文件
+					cmd = m.triggerDebouncedSave() // 使用防抖保存
 				}
 				m.InputMode = false
 				m.StatusMsg = "Comment saved!"
-				return m, nil
+				return m, cmd
 
 			case "esc":
 				// 取消编辑
@@ -131,6 +148,8 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 按 q 或 Ctrl+C 退出程序
 			case "q", "ctrl+c":
 				m.Quitting = true
+				// 退出前强制立即保存一次，防止防抖还没触发就退出了
+				m.saveStateImmediate()
 				// 退出时关闭 AltScreen，恢复终端原样
 				return m, tea.ExitAltScreen
 
@@ -157,7 +176,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 传入 idx 指针，在递归中寻找当前光标对应的节点
 				// 如果发生状态改变，触发保存
 				if m.toggleNode(m.RootNode.Children, &idx) {
-					m.saveState() // 保存状态到文件
+					cmd = m.triggerDebouncedSave() // 使用防抖
 				}
 
 			// 回车键隐藏/显示
@@ -165,7 +184,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				idx := 0
 				// 如果发生状态改变，触发保存
 				if m.toggleHidden(m.RootNode.Children, &idx) {
-					m.saveState() // 保存状态到文件
+					cmd = m.triggerDebouncedSave() // 使用防抖
 				}
 
 			// 'c' 键复制功能
@@ -197,15 +216,26 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	return m, nil
+	// 返回 cmd，因为防抖逻辑可能会产生 cmd
+	return m, cmd
 }
 
-// saveState 保存当前状态到 .gentr.json
-func (m MainModel) saveState() {
+// trigg触发防抖保存：更新 Tag，并返回一个延时指令
+func (m *MainModel) triggerDebouncedSave() tea.Cmd {
+	m.SaveTag++ // 版本号 +1
+	currentTag := m.SaveTag
+
+	// 返回一个延时 600ms 的指令
+	// 如果 600ms 内用户又操作了，m.SaveTag 会继续增加
+	// 等这个 Tick 回来时，它的 currentTag 就不等于 m.SaveTag 了，就不会执行保存
+	return tea.Tick(600*time.Millisecond, func(t time.Time) tea.Msg {
+		return SaveMsg{Tag: currentTag}
+	})
+}
+
+// saveStateImmediate 立即保存当前状态到 .gentr.json (原 saveState)
+func (m MainModel) saveStateImmediate() {
 	cwd, _ := os.Getwd()
-	// 调用 core 包的 SaveConfig 方法
-	// 频繁 IO 可能需要做防抖处理，
-	// 但 TUI 操作频率较低，直接同步保存通常没有性能问题。
 	_ = core.SaveConfig(cwd, m.RootNode)
 }
 
