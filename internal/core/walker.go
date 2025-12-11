@@ -8,21 +8,54 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
+// 安全限制常量
+const (
+	MaxFiles = 5000 // 最大文件节点数
+	MaxDepth = 10   // 最大递归深度
+)
+
+// 计数器
+type counter struct {
+	count        int
+	limitReached bool
+}
+
 // Walk 负责从根目录开始构建树
-func Walk(rootPath string) (*model.Node, error) {
-	// 寻找并加载根目录底下的.gitignore文件
+func Walk(rootPath string) (*model.Node, bool, error) {
+	// 加载 .gitignore
 	ignoreObj, _ := ignore.CompileIgnoreFile(filepath.Join(rootPath, ".gitignore"))
-	// 开始递归扫描目录
-	return scanDir(rootPath, ignoreObj)
+
+	// 初始化计数器
+	c := &counter{count: 0}
+
+	// 开始扫描
+	root, err := scanDir(rootPath, ignoreObj, 0, c)
+
+	// 返回结果，同时返回是否触发了限制
+	return root, c.limitReached, err
 }
 
 // scanDir 递归扫描目录，构建节点树
-func scanDir(path string, ignoreObj *ignore.GitIgnore) (*model.Node, error) {
+func scanDir(path string, ignoreObj *ignore.GitIgnore, depth int, c *counter) (*model.Node, error) {
+	// 深度熔断检查
+	if depth > MaxDepth {
+		return nil, nil // 超过深度，不再深入，直接返回 nil，会被上层过滤掉
+	}
+
+	// 数量熔断检查
+	if c.count >= MaxFiles {
+		c.limitReached = true // 标记触发限制
+		return nil, nil
+	}
+
 	// 获取文件或文件夹的基础信息
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
+
+	// 计数
+	c.count++
 
 	// 创建当前节点
 	node := &model.Node{
@@ -43,25 +76,34 @@ func scanDir(path string, ignoreObj *ignore.GitIgnore) (*model.Node, error) {
 	}
 
 	for _, entry := range entries {
-		// 构建子文件的完整路径
-		fullPath := filepath.Join(path, entry.Name())
-
-		// 检查是否被.gitignore忽略
-		if ignoreObj != nil && ignoreObj.MatchesPath(entry.Name()) { // ignoreObj 可能为空（如果用户没写 .gitignore），所以要判空
-			continue
-		}
-
-		// 默认忽略.git
+		// git 目录硬编码忽略
 		if entry.Name() == ".git" {
 			continue
 		}
 
-		// 递归调用
-		childNode, err := scanDir(fullPath, ignoreObj)
+		// .gitignore 检查
+		if ignoreObj != nil && ignoreObj.MatchesPath(entry.Name()) {
+			continue
+		}
+
+		// 构建子文件的完整路径
+		fullPath := filepath.Join(path, entry.Name())
+
+		// 递归调用 (深度 + 1)
+		childNode, err := scanDir(fullPath, ignoreObj, depth+1, c)
 		if err != nil {
 			continue // 遇到错误选择跳过而不是崩溃
 		}
-		node.Children = append(node.Children, childNode) //把找到的子节点挂载到当前节点下
+
+		// childNode 为 nil 时不添加
+		if childNode != nil {
+			node.Children = append(node.Children, childNode)
+		}
+
+		// 数量限制优化，提前跳出
+		if c.limitReached {
+			break
+		}
 	}
 	return node, nil
 }

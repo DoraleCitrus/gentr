@@ -23,6 +23,8 @@ var (
 	selectedHiddenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("175")).Bold(true).Strikethrough(true)
 	// 状态栏样式：背景白色文字紫色
 	statusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(lipgloss.Color("57")).Padding(0, 1)
+	// 警告栏样式：黄色背景，黑色文字
+	warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#FFFF00")).Padding(0, 1).Bold(true)
 )
 
 // MainModel 是 TUI 的状态容器
@@ -34,16 +36,19 @@ type MainModel struct {
 	// 终端的宽度和高度，用于计算截断
 	Width  int
 	Height int
+
+	LimitWarning bool // 警告标记
 }
 
 // InitialModel 初始化状态
-func InitialModel(root *model.Node) MainModel {
+func InitialModel(root *model.Node, limitReached bool) MainModel {
 	return MainModel{
-		RootNode: root,
-		Cursor:   0,
-		Quitting: false,
-		Width:    80,
-		Height:   24,
+		RootNode:     root,
+		Cursor:       0,
+		Quitting:     false,
+		Width:        80,
+		Height:       24,
+		LimitWarning: limitReached, // 注入状态
 	}
 }
 
@@ -107,6 +112,13 @@ func (m MainModel) View() string {
 		return "" // 退出时返回空字符串，避免屏幕闪烁
 	}
 
+	// 警告条逻辑
+	warningBar := ""
+	if m.LimitWarning {
+		msg := "[!] Safety Limit Reached: Only showing first 5000 files / 10 levels deep."
+		warningBar = warningStyle.Width(m.Width).Render(msg) + "\n"
+	}
+
 	// 标题
 	header := fmt.Sprintf("Project: %s\n", m.RootNode.Name)
 
@@ -136,7 +148,7 @@ func (m MainModel) View() string {
 	// 提示文案
 	help := "\n[Space] Toggle folder  [Enter] Hide/Show  [↑/↓] Move  [q] Quit"
 
-	result := header + treeView + "\n" + statusBar + help
+	result := warningBar + header + treeView + "\n" + statusBar + help
 
 	// 补齐空行，消除终端伪影
 	lines := strings.Count(result, "\n") + 1

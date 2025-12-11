@@ -12,19 +12,20 @@ import (
 func main() {
 	// 扫描文件
 	cwd, _ := os.Getwd()
-	rootNode, err := core.Walk(cwd)
+	// 接收 limitReached 返回值
+	rootNode, limitReached, err := core.Walk(cwd)
 	if err != nil {
 		fmt.Printf("Error scanning directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 初始化 UI 模型
-	initialModel := ui.InitialModel(rootNode)
+	// 初始化 UI 模型，将 limitReached 传给 UI
+	initialModel := ui.InitialModel(rootNode, limitReached)
 
 	// 创建 Bubble Tea 程序并运行
 	p := tea.NewProgram(initialModel)
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Alas, there's been an error: %v", err)
+		fmt.Printf("[ERROR]: %v", err)
 		os.Exit(1)
 	}
 }
