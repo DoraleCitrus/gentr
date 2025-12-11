@@ -14,7 +14,7 @@ import (
 )
 
 // 定义版本号
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 func main() {
 	// 定义命令行参数 Flags
@@ -115,11 +115,14 @@ func main() {
 	// 使用 absPath 作为配置加载路径
 	core.LoadConfig(absPath, rootNode)
 
-	// 初始化 UI 模型，将 limitReached 传给 UI
-	initialModel := ui.InitialModel(rootNode, limitReached)
+	// 初始化 UI 模型：传入 Version 以便进行更新检查
+	initialModel := ui.InitialModel(rootNode, limitReached, Version)
 
 	// 创建 Bubble Tea 程序并运行
-	p := tea.NewProgram(initialModel)
+	// 使用 tea.WithAltScreen() 确保程序由框架接管全屏模式
+	// 这样退出时框架会自动恢复终端状态，解决无法打字的问题
+	p := tea.NewProgram(initialModel, tea.WithAltScreen())
+
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("[ERROR]: %v", err)
 		os.Exit(1)

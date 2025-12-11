@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os" // 用于获取当前工作目录以保存配置
+	"runtime"
 	"strings"
 	"time" // 用于 Tick
 
@@ -42,6 +43,9 @@ var (
 	gitAddedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")).Bold(true)
 	// Git模式下的状态栏 (橙色背景)
 	gitStatusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#D08770")).Padding(0, 1).Bold(true)
+
+	// 更新横幅样式 (蓝色背景，白色文字，加粗)
+	updateBannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#005faff")).Padding(0, 1).Bold(true)
 )
 
 // SVG 主题系统定义
@@ -74,9 +78,9 @@ var (
 		Name:         "Light",
 		BgColor:      "#ffffff",
 		TextColor:    "#24292e",
-		TreeColor:    "#6a737d",
-		FolderColor:  "#0366d6",
-		CommentColor: "#6a737d",
+		TreeColor:    "#d1d5da", // Light grey for tree lines
+		FolderColor:  "#0366d6", // Blue
+		CommentColor: "#6a737d", // Grey
 		GitModColor:  "#b08800", // Dark Yellow
 		GitAddColor:  "#22863a", // Green
 	}
@@ -85,6 +89,12 @@ var (
 // 定义防抖消息，携带版本号
 type SaveMsg struct {
 	Tag int
+}
+
+// 检查更新的消息
+type CheckUpdateMsg struct {
+	Available     bool
+	LatestVersion string
 }
 
 // MainModel 是 TUI 的状态容器
@@ -115,10 +125,15 @@ type MainModel struct {
 
 	// Git 模式开关
 	GitMode bool
+
+	// 版本相关字段
+	CurrentVersion  string
+	UpdateAvailable bool
+	LatestVersion   string
 }
 
 // InitialModel 初始化状态
-func InitialModel(root *model.Node, limitReached bool) MainModel {
+func InitialModel(root *model.Node, limitReached bool, currentVersion string) MainModel {
 	// 初始化输入框
 	ti := textinput.New()
 	ti.Placeholder = "Type comment..."
@@ -134,26 +149,40 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 	si.Width = 50
 
 	return MainModel{
-		RootNode:     root,
-		Cursor:       0,
-		Quitting:     false,
-		Width:        80,
-		Height:       24,
-		LimitWarning: limitReached, // 注入状态
-		StatusMsg:    "",           // 初始化为空
-		TextInput:    ti,           // 注入输入框
-		InputMode:    false,        // 默认关闭
-		SearchInput:  si,           // 注入搜索框
-		SearchMode:   false,        // 默认关闭
-		SaveTag:      0,            // 防抖计数器初始化
-		GitMode:      false,        // 默认关闭 Git 模式
+		RootNode:       root,
+		Cursor:         0,
+		Quitting:       false,
+		Width:          80,
+		Height:         24,
+		LimitWarning:   limitReached,   // 注入状态
+		StatusMsg:      "",             // 初始化为空
+		TextInput:      ti,             // 注入输入框
+		InputMode:      false,          // 默认关闭
+		SearchInput:    si,             // 注入搜索框
+		SearchMode:     false,          // 默认关闭
+		SaveTag:        0,              // 防抖计数器初始化
+		GitMode:        false,          // 默认关闭 Git 模式
+		CurrentVersion: currentVersion, // 保存当前版本
 	}
 }
 
 // Init 是程序启动时执行的初始化方法
 func (m MainModel) Init() tea.Cmd {
-	// 启动时进入 AltScreen 全屏模式，解决拖动残留问题
-	return tea.EnterAltScreen
+	// 触发异步检查更新
+	return m.checkUpdateCmd
+}
+
+// 检查更新的 Cmd
+func (m MainModel) checkUpdateCmd() tea.Msg {
+	available, latest, err := core.CheckForUpdates(m.CurrentVersion)
+	if err != nil {
+		// 网络错误等，静默失败，不打扰用户
+		return CheckUpdateMsg{Available: false}
+	}
+	return CheckUpdateMsg{
+		Available:     available,
+		LatestVersion: latest,
+	}
 }
 
 // Update 处理用户输入并更新状态
@@ -172,6 +201,14 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 当消息里的 Tag 等于当前的 SaveTag 时，说明是最新的操作，执行保存
 		if msg.Tag == m.SaveTag {
 			m.saveStateImmediate()
+		}
+		return m, nil
+
+	// 处理更新检查结果
+	case CheckUpdateMsg:
+		if msg.Available {
+			m.UpdateAvailable = true
+			m.LatestVersion = msg.LatestVersion
 		}
 		return m, nil
 	}
@@ -240,8 +277,8 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Quitting = true
 				// 退出前强制立即保存一次，防止防抖还没触发就退出了
 				m.saveStateImmediate()
-				// 退出时关闭 AltScreen，恢复终端原样
-				return m, tea.ExitAltScreen
+				// 直接 Quit，屏幕恢复由 WithAltScreen 接管
+				return m, tea.Quit
 
 			// 向上移动光标
 			case "up", "k":
@@ -442,19 +479,34 @@ func (m MainModel) View() string {
 		return "" // 退出时返回空字符串，避免屏幕闪烁
 	}
 
-	// 警告条逻辑
-	warningBar := ""
-	if m.LimitWarning {
-		msg := "[!] Safety Limit Reached: Only showing first 5000 files / 10 levels deep."
-		warningBar = warningStyle.Width(m.Width).Render(msg) + "\n"
+	topContent := ""
+
+	// 1. 更新提醒 (最高优先级)
+	if m.UpdateAvailable {
+		instruction := ""
+		if runtime.GOOS == "windows" {
+			instruction = "Download at github.com/DoraleCitrus/gentr/releases"
+		} else {
+			instruction = "Run: curl -sfL .../install.sh | sh"
+		}
+
+		msg := fmt.Sprintf("Update Available: %s -> %s | %s", m.CurrentVersion, m.LatestVersion, instruction)
+
+		// 确保横幅占满宽度
+		topContent += updateBannerStyle.Width(m.Width).Render(msg) + "\n"
 	}
 
-	// 标题
+	// 2. 警告条逻辑
+	if m.LimitWarning {
+		msg := "[!] Safety Limit Reached: Only showing first 5000 files / 10 levels deep."
+		topContent += warningStyle.Width(m.Width).Render(msg) + "\n"
+	}
+
+	// 3. 标题
 	header := fmt.Sprintf("Project: %s\n", m.RootNode.Name)
+	topContent += header
 
 	// 递归渲染文件树
-	// 根节点本身不需要前缀,它的子节点开始要有前缀
-	// 传递一个整数指针 &index 进去，在递归函数里，index 的值会累加，从而实现全局计数
 	index := 0
 	// forceHidden 参数，初始为 false
 	treeView := m.renderChildren(m.RootNode.Children, "", &index, false)
@@ -514,7 +566,7 @@ func (m MainModel) View() string {
 		bottomBar = statusBar + help
 	}
 
-	result := warningBar + header + treeView + "\n" + bottomBar
+	result := topContent + treeView + "\n" + bottomBar
 
 	// 补齐空行，消除终端伪影
 	lines := strings.Count(result, "\n") + 1
