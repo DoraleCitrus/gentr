@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math" // 用于 Force 模式的无限大常量
 	"os"
 	"path/filepath"
 
@@ -8,11 +9,18 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 )
 
-// 安全限制常量
+// 默认安全限制常量
 const (
-	MaxFiles = 5000 // 最大文件节点数
-	MaxDepth = 10   // 最大递归深度
+	DefaultMaxFiles = 5000 // 默认最大文件节点数
+	DefaultMaxDepth = 10   // 默认最大递归深度
 )
+
+// 扫描配置选项
+type WalkOptions struct {
+	MaxFiles        int
+	MaxDepth        int
+	IgnoreGitIgnore bool // 是否无视 .gitignore
+}
 
 // 计数器
 type counter struct {
@@ -21,9 +29,12 @@ type counter struct {
 }
 
 // Walk 负责从根目录开始构建树
-func Walk(rootPath string) (*model.Node, bool, error) {
-	// 加载 .gitignore
-	ignoreObj, _ := ignore.CompileIgnoreFile(filepath.Join(rootPath, ".gitignore"))
+func Walk(rootPath string, opts WalkOptions) (*model.Node, bool, error) {
+	// 根据配置决定是否加载.gitignore
+	var ignoreObj *ignore.GitIgnore
+	if !opts.IgnoreGitIgnore {
+		ignoreObj, _ = ignore.CompileIgnoreFile(filepath.Join(rootPath, ".gitignore"))
+	}
 
 	// 预加载 Git 状态
 	gitStatusMap := LoadGitStatus(rootPath)
@@ -33,21 +44,22 @@ func Walk(rootPath string) (*model.Node, bool, error) {
 
 	// 开始扫描
 	// 传入 rootPath 和 gitStatusMap
-	root, err := scanDir(rootPath, rootPath, ignoreObj, 0, c, gitStatusMap)
+	// 传入 opts
+	root, err := scanDir(rootPath, rootPath, ignoreObj, 0, c, gitStatusMap, opts)
 
 	// 返回结果，同时返回是否触发了限制
 	return root, c.limitReached, err
 }
 
 // scanDir 递归扫描目录，构建节点树
-func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth int, c *counter, gitMap map[string]string) (*model.Node, error) {
-	// 深度熔断检查
-	if depth > MaxDepth {
+func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth int, c *counter, gitMap map[string]string, opts WalkOptions) (*model.Node, error) {
+	// 深度熔断检查并使用 opts 中的配置
+	if depth > opts.MaxDepth {
 		return nil, nil // 超过深度，不再深入，直接返回 nil，会被上层过滤掉
 	}
 
-	// 数量熔断检查
-	if c.count >= MaxFiles {
+	// 数量熔断检查并使用 opts 中的配置
+	if c.count >= opts.MaxFiles {
 		c.limitReached = true // 标记触发限制
 		return nil, nil
 	}
@@ -95,7 +107,7 @@ func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth in
 			continue
 		}
 
-		// .gitignore 检查
+		// 只有当 ignoreObj 存在时才检查
 		if ignoreObj != nil && ignoreObj.MatchesPath(entry.Name()) {
 			continue
 		}
@@ -105,7 +117,8 @@ func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth in
 
 		// 递归调用 (深度 + 1)
 		// 传递 rootPath 和 gitMap
-		childNode, err := scanDir(fullPath, rootPath, ignoreObj, depth+1, c, gitMap)
+		// 传递 opts
+		childNode, err := scanDir(fullPath, rootPath, ignoreObj, depth+1, c, gitMap, opts)
 		if err != nil {
 			continue // 遇到错误选择跳过而不是崩溃
 		}
@@ -121,4 +134,22 @@ func scanDir(path string, rootPath string, ignoreObj *ignore.GitIgnore, depth in
 		}
 	}
 	return node, nil
+}
+
+// 辅助函数DefaultOptions：生成默认配置
+func DefaultOptions() WalkOptions {
+	return WalkOptions{
+		MaxFiles:        DefaultMaxFiles,
+		MaxDepth:        DefaultMaxDepth,
+		IgnoreGitIgnore: false,
+	}
+}
+
+// 辅助函数ForceOptions：生成强制模式配置
+func ForceOptions() WalkOptions {
+	return WalkOptions{
+		MaxFiles:        math.MaxInt32, // 无限大
+		MaxDepth:        math.MaxInt32, // 无限深
+		IgnoreGitIgnore: true,          // 无视 .gitignore
+	}
 }
