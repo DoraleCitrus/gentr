@@ -48,17 +48,43 @@
 curl -sfL https://raw.githubusercontent.com/DoraleCitrus/gentr/main/install.sh | sh
 ```
 
-### Go 安装
+#### **macOS 用户注意**: 如果遇到“无法验证开发者”的安全拦截，请运行以下命令来信任该程序。
+
+```bash
+xattr -d com.apple.quarantine $(which gentr)
+```
+
+### Windows (手动安装)
+
+前往 [Releases 页面](https://github.com/DoraleCitrus/gentr/releases) 下载最新的 gentr_x.x.x_windows_amd64.zip。
+
+将压缩包解压到一个你不会删除的目录（例如 C:\gentr\）。
+
+配置环境变量 (PATH)：
+
+按 <kbd>Win</kbd> 键，搜索 "环境变量" 并打开。
+
+点击 "环境变量(N)..." 按钮。
+
+在 "用户变量" 列表中找到 Path，选中并点击 "编辑"。
+
+点击 "新建"，将刚才的文件夹路径（如 C:\gentr\）粘贴进去。
+
+一路点击 "确定" 保存。
+
+重启你的终端 (PowerShell / CMD / VS Code) 即可生效。
+
+### 手动下载
+
+请前往 [Releases 页面](https://github.com/DoraleCitrus/gentr/releases) 下载适用于 Windows、macOS 和 Linux 的预编译二进制文件。
+
+### Go 安装 (开发者)
 
 如果你已安装 Go 环境：
 
 ```bash
 go install github.com/DoraleCitrus/gentr@latest
 ```
-
-### 手动下载
-
-请前往 [Releases 页面](https://github.com/DoraleCitrus/gentr/releases) 下载适用于 Windows、macOS 和 Linux 的预编译二进制文件。
 
 ## ⌨️ 使用指南
 

@@ -21,7 +21,6 @@
 
 </div>
 
-
 ## 📖 Introduction
 
 **Gentr** takes the classic `tree` command and gives it superpowers. It is a TUI (Terminal User Interface) tool designed for documentation, code reviews, and project onboarding.
@@ -49,17 +48,45 @@ Tired of the poor readability of git status? We can make it more elegant for you
 curl -sfL https://raw.githubusercontent.com/DoraleCitrus/gentr/main/install.sh | sh
 ```
 
-### Go Install
+#### **Note for macOS users**: If you see a security warning, run this command to trust the binary.
+
+```bash
+xattr -d com.apple.quarantine $(which gentr)
+```
+
+### Windows (Manual Install)
+
+Download the latest gentr_x.x.x_windows_amd64.zip from the [Releases Page](https://github.com/DoraleCitrus/gentr/releases).
+
+Extract the zip file to a permanent location (e.g., C:\gentr\).
+
+Add to PATH (so you can run gentr from any terminal):
+
+Press <kbd>Win</kbd> and search for "env".
+
+Select "Edit the system environment variables".
+
+Click "Environment Variables...".
+
+Under "User variables", find Path and click Edit.
+
+Click New and paste the folder path (e.g., C:\gentr\).
+
+Click OK on all windows.
+
+Restart your terminal (PowerShell / CMD / VS Code) to apply changes.
+
+### Manual Download
+
+Download the pre-compiled binaries for Windows, macOS, and Linux from the [Releases Page](https://github.com/DoraleCitrus/gentr/releases).
+
+### Go Install (Developers)
 
 If you have Go installed:
 
 ```bash
 go install github.com/DoraleCitrus/gentr@latest
 ```
-
-### Manual Download
-
-Download the pre-compiled binaries for Windows, macOS, and Linux from the [Releases Page](https://github.com/DoraleCitrus/gentr/releases).
 
 ## ⌨️ Usage
 
@@ -112,4 +139,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](https://github.com/DoraleCitrus/gentr/blob/main/LICENSE) file for details.
-
