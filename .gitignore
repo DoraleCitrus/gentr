@@ -30,6 +30,10 @@ go.work.sum
 # json config file for testing
 .gentr.json
 
+# gentr generated files for svg export and text export
+*.svg
+*.txt
+
 # Editor/IDE
 # .idea/
 # .vscode/

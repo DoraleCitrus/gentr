@@ -254,6 +254,30 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// 返回一个空的 Tick 强制触发 View 刷新以显示 StatusMsg
 				return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
 
+			// 's' 键保存为文本文件
+			case "s":
+				output := m.generateTreeOutput()
+				filename := "gentr_output.txt"
+				err := os.WriteFile(filename, []byte(output), 0644)
+				if err != nil {
+					m.StatusMsg = "Error saving file: " + err.Error()
+				} else {
+					m.StatusMsg = fmt.Sprintf("Saved to %s", filename)
+				}
+				return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
+
+			// 'p' 键保存为 SVG 图片
+			case "p":
+				output := m.generateTreeOutput()
+				filename := "gentr_image.svg"
+				err := m.saveToSVG(output, filename)
+				if err != nil {
+					m.StatusMsg = "Error saving SVG: " + err.Error()
+				} else {
+					m.StatusMsg = fmt.Sprintf("Saved to %s", filename)
+				}
+				return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
+
 			// 按 'i' 进入编辑模式
 			case "i":
 				idx := 0
@@ -447,7 +471,8 @@ func (m MainModel) View() string {
 			filterHint += " [g] Git Changes"
 		}
 
-		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search  %s  [c] Copy  [q] Quit", filterHint)
+		// 帮助文案
+		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search  %s\n[c] Copy  [s] Save Txt  [p] Save SVG  [q] Quit", filterHint)
 		bottomBar = statusBar + help
 	}
 
@@ -614,7 +639,7 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			dimmedStyle.Render(connector),
 			icon,
 			style.Render(displayName),
-			gitMarkStyle.Render(gitMark), // [新增] 渲染 Git 标记
+			gitMarkStyle.Render(gitMark), // 渲染 Git 标记
 			annotationStyle.Render(annotationStr),
 		)
 		sb.WriteString(line + "\n")
@@ -631,6 +656,8 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 
 		if child.IsDir && len(child.Children) > 0 && shouldExpand {
 			// 计算新的前缀
+			// 如果当前节点是最后一个，那子节点的缩进就是空格 "    "
+			// 如果当前节点不是最后一个，那子节点的缩进还需要竖线 "│   " 来连接下面的兄弟节点
 			childPrefix := prefix + "│   "
 			if isLast {
 				childPrefix = prefix + "    "
@@ -790,8 +817,19 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 			connector = "└── "
 		}
 
-		// 输出行：前缀 + 连接线 + 文件名 + [注释]
-		line := fmt.Sprintf("%s%s%s", prefix, connector, child.Name)
+		// 根据 GitMode 决定是否追加 Git 标记
+		gitSuffix := ""
+		if m.GitMode {
+			if child.GitStatus == "M" {
+				gitSuffix = " [M]"
+			} else if child.GitStatus == "A" {
+				gitSuffix = " [+]"
+			}
+		}
+
+		// 输出行：前缀 + 连接线 + 文件名 + [Git标记] + [注释]
+		line := fmt.Sprintf("%s%s%s%s", prefix, connector, child.Name, gitSuffix)
+
 		if child.Annotation != "" {
 			// 导出时的注释格式，用空格对齐
 			line += fmt.Sprintf("  # %s", child.Annotation)
@@ -814,4 +852,50 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 		}
 	}
 	return sb.String()
+}
+
+// SVG 生成逻辑
+func (m MainModel) saveToSVG(content string, filename string) error {
+	lines := strings.Split(content, "\n")
+	lineHeight := 20
+	width := 800 // 默认宽度
+	height := (len(lines) + 2) * lineHeight
+
+	// 估算宽度：找到最长的一行
+	maxLen := 0
+	for _, line := range lines {
+		if len(line) > maxLen {
+			maxLen = len(line)
+		}
+	}
+	// 粗略估算：每个字符宽度 10px (对于 monospace 字体)
+	calculatedWidth := maxLen * 10
+	if calculatedWidth > width {
+		width = calculatedWidth + 40 // 加点边距
+	}
+
+	var sb strings.Builder
+	// SVG Header
+	sb.WriteString(fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d">`, width, height))
+	// 背景色 (VS Code Dark 风格)
+	sb.WriteString(fmt.Sprintf(`<rect width="100%%" height="100%%" fill="#1e1e1e" />`))
+	// 样式定义
+	sb.WriteString(`<style>text { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 14px; fill: #d4d4d4; white-space: pre; }</style>`)
+
+	y := 20
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		// 转义 XML 特殊字符
+		safeLine := strings.ReplaceAll(line, "&", "&amp;")
+		safeLine = strings.ReplaceAll(safeLine, "<", "&lt;")
+		safeLine = strings.ReplaceAll(safeLine, ">", "&gt;")
+
+		sb.WriteString(fmt.Sprintf(`<text x="20" y="%d">%s</text>`, y, safeLine))
+		y += lineHeight
+	}
+	sb.WriteString(`</svg>`)
+
+	return os.WriteFile(filename, []byte(sb.String()), 0644)
 }
