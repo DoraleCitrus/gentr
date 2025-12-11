@@ -8,7 +8,7 @@ import (
 
 	"github.com/DoraleCitrus/gentr/internal/core"
 	"github.com/DoraleCitrus/gentr/internal/model"
-	"github.com/atotto/clipboard"               // 剪贴板库
+	"github.com/atotto/clipboard"                // 剪贴板库
 	"github.com/charmbracelet/bubbles/textinput" // 输入框组件
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -32,6 +32,8 @@ var (
 	warningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#FFFF00")).Padding(0, 1).Bold(true)
 	// 注释样式：深灰色 + 斜体
 	annotationStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
+	// 搜索匹配的高亮样式 (黄色加粗)
+	searchMatchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Bold(true)
 )
 
 // 定义防抖消息，携带版本号
@@ -58,6 +60,10 @@ type MainModel struct {
 	TextInput textinput.Model // 输入框组件
 	InputMode bool            // 是否处于编辑模式
 
+	// 搜索相关状态
+	SearchInput textinput.Model
+	SearchMode  bool
+
 	// 防抖计数器 (版本号)
 	SaveTag int
 }
@@ -71,6 +77,13 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 	ti.CharLimit = 156
 	ti.Width = 50
 
+	// 初始化搜索输入框
+	si := textinput.New()
+	si.Placeholder = "Search files..."
+	si.Prompt = "/ "
+	si.CharLimit = 50
+	si.Width = 50
+
 	return MainModel{
 		RootNode:     root,
 		Cursor:       0,
@@ -81,6 +94,8 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 		StatusMsg:    "",           // 初始化为空
 		TextInput:    ti,           // 注入输入框
 		InputMode:    false,        // 默认关闭
+		SearchInput:  si,           // 注入搜索框
+		SearchMode:   false,        // 默认关闭
 		SaveTag:      0,            // 防抖计数器初始化
 	}
 }
@@ -109,6 +124,30 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveStateImmediate()
 		}
 		return m, nil
+	}
+
+	// 搜索模式优先处理
+	if m.SearchMode {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter", "esc":
+				// 退出搜索输入
+				// Esc 清空并退出，Enter 仅退出输入焦点但保留过滤结果
+				if msg.String() == "esc" {
+					m.SearchInput.SetValue("") // 清空搜索
+				}
+				m.SearchMode = false
+				return m, nil
+			}
+		}
+		// 更新搜索输入框
+		var siCmd tea.Cmd
+		m.SearchInput, siCmd = m.SearchInput.Update(msg)
+
+		// 每次按键后，搜索词变了，树的结构就变了，光标必须重置，防止越界
+		m.Cursor = 0
+		return m, siCmd
 	}
 
 	// 区分 输入模式/导航模式
@@ -213,6 +252,19 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// 让光标闪烁
 					return m, textinput.Blink
 				}
+
+			// 按 '/' 进入搜索模式
+			case "/":
+				m.SearchMode = true
+				m.SearchInput.Focus()
+				return m, textinput.Blink
+
+			// 在导航模式按 Esc 清空搜索结果
+			case "esc":
+				if m.SearchInput.Value() != "" {
+					m.SearchInput.SetValue("")
+					m.Cursor = 0 // 重置光标
+				}
 			}
 		}
 	}
@@ -220,7 +272,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// trigg触发防抖保存：更新 Tag，并返回一个延时指令
+// 触发防抖保存：更新 Tag，并返回一个延时指令
 func (m *MainModel) triggerDebouncedSave() tea.Cmd {
 	m.SaveTag++ // 版本号 +1
 	currentTag := m.SaveTag
@@ -237,6 +289,34 @@ func (m *MainModel) triggerDebouncedSave() tea.Cmd {
 func (m MainModel) saveStateImmediate() {
 	cwd, _ := os.Getwd()
 	_ = core.SaveConfig(cwd, m.RootNode)
+}
+
+// shouldShow 判断节点是否应该在当前搜索词下显示
+func (m MainModel) shouldShow(node *model.Node) bool {
+	term := m.SearchInput.Value()
+	if term == "" {
+		return true // 没有搜索词，默认显示
+	}
+	// 递归匹配：如果自己匹配 OR 任何子孙匹配，则显示
+	return m.doesNodeMatch(node, strings.ToLower(term))
+}
+
+// doesNodeMatch 递归匹配检查
+func (m MainModel) doesNodeMatch(node *model.Node, term string) bool {
+	// 1. 检查自己
+	if strings.Contains(strings.ToLower(node.Name), term) {
+		return true
+	}
+	// 2. 检查子节点
+	// 判断“显不显示”只要有一个子节点匹配就行
+	if node.IsDir {
+		for _, child := range node.Children {
+			if m.doesNodeMatch(child, term) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // View 渲染终端上的界面
@@ -268,8 +348,11 @@ func (m MainModel) View() string {
 	if m.InputMode {
 		// 1. 如果在输入模式，显示输入框
 		bottomBar = fmt.Sprintf("\nAdding comment for selected file:\n%s\n(Enter to save, Esc to cancel)", m.TextInput.View())
+	} else if m.SearchMode {
+		// 2. 如果在搜索模式，显示搜索框
+		bottomBar = fmt.Sprintf("\n%s\n(Enter to view, Esc to cancel)", m.SearchInput.View())
 	} else {
-		// 2. 如果在导航模式，显示状态栏 + 帮助
+		// 3. 如果在导航模式，显示状态栏 + 帮助
 		// 状态栏逻辑：优先显示 StatusMsg
 		statusText := ""
 		if m.StatusMsg != "" {
@@ -294,7 +377,11 @@ func (m MainModel) View() string {
 		statusBar := statusBarStyle.Width(m.Width).Render(statusText)
 
 		// 提示文案
-		help := "\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [c] Copy  [↑/↓] Move  [q] Quit"
+		filterHint := ""
+		if m.SearchInput.Value() != "" {
+			filterHint = " [Esc] Clear Filter"
+		}
+		help := fmt.Sprintf("\n[Space] Toggle  [Enter] Hide/Show  [i] Comment  [/] Search%s  [c] Copy  [q] Quit", filterHint)
 		bottomBar = statusBar + help
 	}
 
@@ -312,9 +399,17 @@ func (m MainModel) View() string {
 // forceHidden bool 参数，用于处理父级隐藏时的级联效果
 func (m MainModel) renderChildren(children []*model.Node, prefix string, index *int, forceHidden bool) string {
 	var sb strings.Builder
-	for i, child := range children {
-		// 判断是否是列表中的最后一个，这决定了使用 └── 还是 ├──
-		isLast := i == len(children)-1
+
+	// 预先过滤出需要显示的子节点
+	var visibleChildren []*model.Node
+	for _, child := range children {
+		if m.shouldShow(child) {
+			visibleChildren = append(visibleChildren, child)
+		}
+	}
+
+	for i, child := range visibleChildren {
+		isLast := i == len(visibleChildren)-1
 
 		connector := "├── "
 		if isLast {
@@ -363,6 +458,17 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 		availableWidth := m.Width - prefixWidth - 1
 
 		displayName := child.Name
+
+		// 搜索高亮逻辑
+		// 如果搜索词不为空，且匹配到了，我们用 searchMatchStyle 渲染整个文件名
+		term := m.SearchInput.Value()
+		if term != "" && strings.Contains(strings.ToLower(displayName), strings.ToLower(term)) {
+			// 如果没被选中，就应用高亮色；如果选中了，保留选中的粉色（selectedStyle 优先级高）
+			// 但为了让搜索结果在非选中时醒目，我们修改 style
+			if *index != m.Cursor {
+				style = searchMatchStyle
+			}
+		}
 
 		// 处理注释的显示逻辑
 		annotationStr := ""
@@ -421,7 +527,13 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 		*index++
 
 		// 如果是文件夹且有子节点，递归渲染其子节点
-		if child.IsDir && len(child.Children) > 0 && !child.Collapsed {
+		// 如果有搜索词，强制忽略 Collapsed 状态
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true // 搜索模式下强制展开
+		}
+
+		if child.IsDir && len(child.Children) > 0 && shouldExpand {
 			// 计算新的前缀
 			childPrefix := prefix + "│   "
 			if isLast {
@@ -438,9 +550,21 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 func (m MainModel) countVisibleNodes(children []*model.Node) int {
 	count := 0
 	for _, child := range children {
+		// 过滤
+		if !m.shouldShow(child) {
+			continue
+		}
+
 		count++
-		// 只有没折叠的目录，才把它的子节点算进总数里
-		if child.IsDir && !child.Collapsed {
+
+		// 搜索时强制展开逻辑
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true
+		}
+
+		// 只有没折叠的目录 (或搜索时)，才把它的子节点算进总数里
+		if child.IsDir && shouldExpand {
 			count += m.countVisibleNodes(child.Children)
 		}
 	}
@@ -450,6 +574,11 @@ func (m MainModel) countVisibleNodes(children []*model.Node) int {
 // toggleNode 找到光标位置的节点并切换状态
 func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
 	for _, child := range children {
+		// 过滤
+		if !m.shouldShow(child) {
+			continue
+		}
+
 		if *index == m.Cursor {
 			if child.IsDir {
 				child.Collapsed = !child.Collapsed
@@ -457,7 +586,14 @@ func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
 			return true
 		}
 		*index++
-		if child.IsDir && !child.Collapsed {
+
+		// 搜索时强制展开逻辑
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true
+		}
+
+		if child.IsDir && shouldExpand {
 			if m.toggleNode(child.Children, index) {
 				return true
 			}
@@ -469,12 +605,24 @@ func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
 // toggleHidden 找到光标位置的节点并切换 Hidden 状态
 func (m MainModel) toggleHidden(children []*model.Node, index *int) bool {
 	for _, child := range children {
+		// 过滤
+		if !m.shouldShow(child) {
+			continue
+		}
+
 		if *index == m.Cursor {
 			child.Hidden = !child.Hidden
 			return true
 		}
 		*index++
-		if child.IsDir && !child.Collapsed {
+
+		// 搜索时强制展开逻辑
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true
+		}
+
+		if child.IsDir && shouldExpand {
 			if m.toggleHidden(child.Children, index) {
 				return true
 			}
@@ -486,11 +634,23 @@ func (m MainModel) toggleHidden(children []*model.Node, index *int) bool {
 // getNodeAtCursor 获取当前光标指向的节点对象，用于状态栏显示路径
 func (m MainModel) getNodeAtCursor(children []*model.Node, index *int) *model.Node {
 	for _, child := range children {
+		// 过滤
+		if !m.shouldShow(child) {
+			continue
+		}
+
 		if *index == m.Cursor {
 			return child
 		}
 		*index++
-		if child.IsDir && !child.Collapsed {
+
+		// 搜索时强制展开逻辑
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true
+		}
+
+		if child.IsDir && shouldExpand {
 			found := m.getNodeAtCursor(child.Children, index)
 			if found != nil {
 				return found
@@ -517,10 +677,10 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 	var sb strings.Builder
 
 	// 1. 先过滤：找出所有没被隐藏的子节点
-	// 必须先知道有哪些节点是“可见”的，才能正确计算谁是“最后一个”，保证线条不断裂
+	// 增加 shouldShow 过滤，确保导出的内容和看到的搜索结果一致
 	var visibleChildren []*model.Node
 	for _, child := range children {
-		if !child.Hidden {
+		if !child.Hidden && m.shouldShow(child) {
 			visibleChildren = append(visibleChildren, child)
 		}
 	}
@@ -543,8 +703,13 @@ func (m MainModel) generateChildrenText(children []*model.Node, prefix string) s
 		sb.WriteString(line + "\n")
 
 		// 递归处理子文件夹
-		// 如果用户在界面上折叠了，导出时也不希望看到展开的细节，符合所见即所得
-		if child.IsDir && len(child.Children) > 0 && !child.Collapsed {
+		// 搜索时强制展开逻辑
+		shouldExpand := !child.Collapsed
+		if m.SearchInput.Value() != "" {
+			shouldExpand = true
+		}
+
+		if child.IsDir && len(child.Children) > 0 && shouldExpand {
 			childPrefix := prefix + "│   "
 			if isLast {
 				childPrefix = prefix + "    "
