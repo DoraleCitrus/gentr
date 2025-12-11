@@ -7,7 +7,7 @@ type Node struct {
 	IsDir    bool    //是否为文件夹
 	Children []*Node //子节点列表，仅当 IsDir 为 true 时有效
 
-	// 以下字段用于UI交互，暂时未用到，为下一步做准备
+	// 以下字段用于UI交互
 	Collapsed bool   //是否折叠
 	Hidden    bool   //是否隐藏(用户手动排除)
 	Annoation string //用户注释

@@ -17,6 +17,10 @@ var (
 	normalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	// 辅助符号：暗色
 	dimmedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	// 隐藏的行：灰色 + 删除线
+	hiddenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Strikethrough(true)
+	// 选中且隐藏的行：暗粉色 + 粗体 + 删除线
+	selectedHiddenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("175")).Bold(true).Strikethrough(true)
 )
 
 // MainModel 是 TUI 的状态容器
@@ -61,7 +65,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 向下移动光标
 		case "down", "j":
 			// 限制光标不能超过文件树的总行数
-			// 我们需要计算一下当前可见的总节点数 (目前暂未实现折叠，所以是所有节点)
+			// 我们需要计算一下当前可见的总节点数
 			totalNodes := m.countVisibleNodes(m.RootNode.Children)
 			if m.Cursor < totalNodes-1 {
 				m.Cursor++
@@ -72,6 +76,11 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			idx := 0
 			// 传入 idx 指针，在递归中寻找当前光标对应的节点
 			m.toggleNode(m.RootNode.Children, &idx)
+
+		// 回车键隐藏/显示
+		case "enter":
+			idx := 0
+			m.toggleHidden(m.RootNode.Children, &idx)
 		}
 	}
 	return m, nil
@@ -90,14 +99,17 @@ func (m MainModel) View() string {
 	// 根节点本身不需要前缀,它的子节点开始要有前缀
 	// 传递一个整数指针 &index 进去，在递归函数里，index 的值会累加，从而实现全局计数
 	index := 0
-	s += m.renderChildren(m.RootNode.Children, "", &index)
+	// forceHidden 参数，初始为 false
+	s += m.renderChildren(m.RootNode.Children, "", &index, false)
 
-	s += "\n[Space] Toggle folder  [↑/↓] Move  [q] Quit\n"
+	// 提示文案
+	s += "\n[Space] Toggle folder  [Enter] Hide/Show  [↑/↓] Move  [q] Quit\n"
 	return s
 }
 
 // renderChildren 遍历一组子节点并生成字符串,并接收一个 *int 类型的 index 指针
-func (m MainModel) renderChildren(children []*model.Node, prefix string, index *int) string {
+// forceHidden bool 参数，用于处理父级隐藏时的级联效果
+func (m MainModel) renderChildren(children []*model.Node, prefix string, index *int, forceHidden bool) string {
 	var sb strings.Builder
 	for i, child := range children {
 		// 判断是否是列表中的最后一个，这决定了使用 └── 还是 ├──
@@ -108,13 +120,26 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			connector = "└── "
 		}
 
+		// 判断当前节点是否应该显示为隐藏状态
+		// 如果父节点强制隐藏(forceHidden) 或者 自身被标记隐藏(child.Hidden)
+		isNodeHidden := forceHidden || child.Hidden
+
 		// 判断当前行是否光标所在行
 		cursorIndicator := "  " // 默认没有光标指示符
 		style := normalStyle    // 默认样式
 
+		// 样式逻辑：处理 普通/选中/隐藏/选中且隐藏 四种状态
+		if isNodeHidden {
+			style = hiddenStyle // 默认隐藏样式
+		}
+
 		if *index == m.Cursor {
 			cursorIndicator = "> " // 光标指示符
-			style = selectedStyle  // 应用选中样式
+			style = selectedStyle  // 默认选中样式
+			// 选中且隐藏状态
+			if isNodeHidden {
+				style = selectedHiddenStyle
+			}
 		}
 
 		// 文件夹指示处理
@@ -146,7 +171,8 @@ func (m MainModel) renderChildren(children []*model.Node, prefix string, index *
 			if isLast {
 				childPrefix = prefix + "    "
 			}
-			sb.WriteString(m.renderChildren(child.Children, childPrefix, index))
+			// 递归传递 isNodeHidden，实现级联隐藏
+			sb.WriteString(m.renderChildren(child.Children, childPrefix, index, isNodeHidden))
 		}
 	}
 	return sb.String()
@@ -188,4 +214,25 @@ func (m MainModel) toggleNode(children []*model.Node, index *int) bool {
 		}
 	}
 	return false // 这一层没找到，继续找兄弟节点
+}
+
+// toggleHidden 找到光标位置的节点并切换 Hidden 状态
+func (m MainModel) toggleHidden(children []*model.Node, index *int) bool {
+	for _, child := range children {
+		if *index == m.Cursor {
+			// 找到目标，切换 Hidden 状态
+			child.Hidden = !child.Hidden
+			return true
+		}
+
+		*index++
+
+		// 即使子节点是 Hidden 的，只要文件夹没折叠，光标依然能进去，所以这里只检查 !child.Collapsed
+		if child.IsDir && !child.Collapsed {
+			if m.toggleHidden(child.Children, index) {
+				return true
+			}
+		}
+	}
+	return false
 }
