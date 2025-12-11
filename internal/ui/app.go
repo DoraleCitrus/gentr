@@ -3,8 +3,10 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time" // 用于 Tick
 
 	"github.com/DoraleCitrus/gentr/internal/model"
+	"github.com/atotto/clipboard" // 剪贴板库
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -38,6 +40,9 @@ type MainModel struct {
 	Height int
 
 	LimitWarning bool // 警告标记
+
+	// 用于在状态栏显示临时消息
+	StatusMsg string
 }
 
 // InitialModel 初始化状态
@@ -49,6 +54,7 @@ func InitialModel(root *model.Node, limitReached bool) MainModel {
 		Width:        80,
 		Height:       24,
 		LimitWarning: limitReached, // 注入状态
+		StatusMsg:    "",           // 初始化为空
 	}
 }
 
@@ -80,6 +86,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.Cursor > 0 {
 				m.Cursor--
+				m.StatusMsg = "" // 移动光标时清除提示消息
 			}
 
 		// 向下移动光标
@@ -89,6 +96,7 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			totalNodes := m.countVisibleNodes(m.RootNode.Children)
 			if m.Cursor < totalNodes-1 {
 				m.Cursor++
+				m.StatusMsg = "" // 移动光标时清除提示消息
 			}
 
 		// 空格键折叠/展开
@@ -101,6 +109,21 @@ func (m MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			idx := 0
 			m.toggleHidden(m.RootNode.Children, &idx)
+
+		// 'c' 键复制功能
+		case "c":
+			output := m.generateTreeOutput()
+			// 使用 markdown 代码块包裹，方便直接粘贴到文档
+			finalText := fmt.Sprintf("```text\n%s```", output)
+
+			err := clipboard.WriteAll(finalText)
+			if err != nil {
+				m.StatusMsg = "Error copying to clipboard!"
+			} else {
+				m.StatusMsg = "Copied to clipboard!"
+			}
+			// 返回一个空的 Tick 强制触发 View 刷新以显示 StatusMsg
+			return m, tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return nil })
 		}
 	}
 	return m, nil
@@ -129,12 +152,19 @@ func (m MainModel) View() string {
 	// forceHidden 参数，初始为 false
 	treeView := m.renderChildren(m.RootNode.Children, "", &index, false)
 
-	// 状态栏
-	idx := 0
-	currentNode := m.getNodeAtCursor(m.RootNode.Children, &idx)
-	statusText := "(No selection)"
-	if currentNode != nil {
-		statusText = fmt.Sprintf("PATH: %s", currentNode.Path)
+	// 状态栏逻辑：优先显示 StatusMsg
+	statusText := ""
+	if m.StatusMsg != "" {
+		statusText = m.StatusMsg // 显示 "Copied!" 等消息
+	} else {
+		// 没有系统消息时，显示当前文件路径
+		idx := 0
+		currentNode := m.getNodeAtCursor(m.RootNode.Children, &idx)
+		if currentNode != nil {
+			statusText = fmt.Sprintf("PATH: %s", currentNode.Path)
+		} else {
+			statusText = "(No selection)"
+		}
 	}
 
 	// 只有当宽度足够时才进行截断操作，防止 Panic
@@ -146,7 +176,7 @@ func (m MainModel) View() string {
 	statusBar := statusBarStyle.Width(m.Width).Render(statusText)
 
 	// 提示文案
-	help := "\n[Space] Toggle folder  [Enter] Hide/Show  [↑/↓] Move  [q] Quit"
+	help := "\n[Space] Toggle  [Enter] Hide/Show  [c] Copy  [↑/↓] Move  [q] Quit"
 
 	result := warningBar + header + treeView + "\n" + statusBar + help
 
@@ -313,4 +343,54 @@ func (m MainModel) getNodeAtCursor(children []*model.Node, index *int) *model.No
 		}
 	}
 	return nil
+}
+
+// generateTreeOutput 生成纯文本树，复制到剪贴板用
+func (m MainModel) generateTreeOutput() string {
+	var sb strings.Builder
+	// 根目录不带前缀
+	sb.WriteString(fmt.Sprintf("%s\n", m.RootNode.Name))
+
+	// 递归生成子节点，过滤掉 Hidden 的
+	// 不需要 index 指针也不需要 cursor 逻辑，只需要纯粹的遍历
+	sb.WriteString(m.generateChildrenText(m.RootNode.Children, ""))
+	return sb.String()
+}
+
+// 递归生成纯文本内容
+func (m MainModel) generateChildrenText(children []*model.Node, prefix string) string {
+	var sb strings.Builder
+
+	// 1. 先过滤：找出所有没被隐藏的子节点
+	// 必须先知道有哪些节点是“可见”的，才能正确计算谁是“最后一个”，保证线条不断裂
+	var visibleChildren []*model.Node
+	for _, child := range children {
+		if !child.Hidden {
+			visibleChildren = append(visibleChildren, child)
+		}
+	}
+
+	// 2. 遍历可见节点
+	for i, child := range visibleChildren {
+		isLast := i == len(visibleChildren)-1
+
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+
+		// 输出行：前缀 + 连接线 + 文件名，生成最纯净的文本，不带图标
+		sb.WriteString(fmt.Sprintf("%s%s%s\n", prefix, connector, child.Name))
+
+		// 递归处理子文件夹
+		// 如果用户在界面上折叠了，导出时也不希望看到展开的细节，符合所见即所得
+		if child.IsDir && len(child.Children) > 0 && !child.Collapsed {
+			childPrefix := prefix + "│   "
+			if isLast {
+				childPrefix = prefix + "    "
+			}
+			sb.WriteString(m.generateChildrenText(child.Children, childPrefix))
+		}
+	}
+	return sb.String()
 }
