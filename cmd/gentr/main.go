@@ -14,7 +14,7 @@ import (
 )
 
 // 定义版本号
-const Version = "1.0.1"
+const Version = "1.0.2"
 
 func main() {
 	// 定义命令行参数 Flags
